@@ -1,5 +1,5 @@
 const { createClient } = require('redis');
-
+require('dotenv').config();
 // const client = createClient({
 //   host: 'localhost',
 //   port: 6379

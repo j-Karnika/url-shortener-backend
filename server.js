@@ -19,6 +19,7 @@ app.use(cors());
 // Middleware to parse JSON request body
 app.use(express.json())
 
+const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
 // ===============================
 
 // Below is the Random id approch.
@@ -133,7 +134,7 @@ app.post('/shorten', async (req, res) => {
     res.json({
       original_url,
       short_code,
-      short_url: `http://localhost:3000/${short_code}`
+      short_url: `${BASE_URL}/${short_code}`
     });
 
   } catch (err) {
