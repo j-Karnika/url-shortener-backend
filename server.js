@@ -9,6 +9,7 @@ const pool = require('./db');
 const redis = require('./redis');
 const { encodeBase62 } = require('./utils');
 const cors = require('cors');
+const { nanoid } = require('nanoid');
 require('dotenv').config();
 
 
@@ -103,32 +104,103 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 // ===============================
 // Below is the Encode-Decode Approach.
 
+// app.post('/shorten', async (req, res) => {
+//   try {
+//     const { original_url } = req.body;
+
+//     if (!original_url) {
+//       return res.status(400).json({ error: 'original_url is required' });
+//     }
+
+//     // Step 1: Insert WITHOUT generating short_code yet (use default or placeholder)
+//     const insertResult = await pool.query(
+//       'INSERT INTO short_urls (original_url, short_code) VALUES ($1, $2) RETURNING id',
+//       [original_url, null]
+//     );
+
+//     const id = insertResult.rows[0].id;
+
+//     // Step 2: Encode the ID to get short_code
+//     const short_code = encodeBase62(id);
+
+//     // Step 3: Update the record with the actual short_code
+//     await pool.query(
+//       'UPDATE short_urls SET short_code = $1 WHERE id = $2',
+//       [short_code, id]
+//     );
+
+//     // Step 4: Cache in Redis
+//     await redis.setEx(`short_url:${short_code}`, 3600, original_url);
+
+//     res.json({
+//       original_url,
+//       short_code,
+//       short_url: `${BASE_URL}/${short_code}`
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: 'Failed to shorten URL' });
+//   }
+// });
+
+// Below is the shorten code generated from claude.
+
+ // npm install nanoid
+
 app.post('/shorten', async (req, res) => {
   try {
     const { original_url } = req.body;
-
     if (!original_url) {
       return res.status(400).json({ error: 'original_url is required' });
     }
 
-    // Step 1: Insert WITHOUT generating short_code yet (use default or placeholder)
-    const insertResult = await pool.query(
-      'INSERT INTO short_urls (original_url, short_code) VALUES ($1, $2) RETURNING id',
-      [original_url, null]
+    // Step 1: check if this URL was already shortened — reuse existing code
+    const existing = await pool.query(
+      'SELECT short_code FROM short_urls WHERE original_url = $1',
+      [original_url]
     );
+    if (existing.rows.length > 0) {
+      const short_code = existing.rows[0].short_code;
+      await redis.setEx(`short_url:${short_code}`, 3600, original_url);
+      return res.json({
+        original_url,
+        short_code,
+        short_url: `${BASE_URL}/${short_code}`
+      });
+    }
 
-    const id = insertResult.rows[0].id;
+    // Step 2: generate a random, non-sequential code (not derived from id)
+    let short_code;
+    let inserted = false;
 
-    // Step 2: Encode the ID to get short_code
-    const short_code = encodeBase62(id);
+    while (!inserted) {
+      short_code = nanoid(7); // random, unguessable
+      try {
+        await pool.query(
+          'INSERT INTO short_urls (original_url, short_code) VALUES ($1, $2)',
+          [original_url, short_code]
+        );
+        inserted = true;
+      } catch (err) {
+        if (err.code === '23505') {
+          // unique_violation — either short_code collision (retry) or
+          // original_url collision from a concurrent request (fetch it)
+          const retry = await pool.query(
+            'SELECT short_code FROM short_urls WHERE original_url = $1',
+            [original_url]
+          );
+          if (retry.rows.length > 0) {
+            short_code = retry.rows[0].short_code;
+            inserted = true;
+          }
+          // else: short_code collision, loop retries with a new random code
+        } else {
+          throw err;
+        }
+      }
+    }
 
-    // Step 3: Update the record with the actual short_code
-    await pool.query(
-      'UPDATE short_urls SET short_code = $1 WHERE id = $2',
-      [short_code, id]
-    );
-
-    // Step 4: Cache in Redis
     await redis.setEx(`short_url:${short_code}`, 3600, original_url);
 
     res.json({
@@ -173,7 +245,7 @@ app.get('/:code', async (req, res) => {
     try {
       await pool.query(
         'INSERT INTO clicks (short_url_id, user_agent, referrer) VALUES ($1, $2, $3)',
-        [short_url_id, req.get('user-agent'), req.get('Referrer')]
+        [short_url_id, req.get('user-agent'), req.get('referer')]
       );
       console.log(`Logged click for short_url_id: ${short_url_id}`);
     } catch (err) {
